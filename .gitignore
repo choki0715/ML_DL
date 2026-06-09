@@ -1,0 +1,34 @@
+# 데이터셋 (노트북 실행 시 자동 다운로드 — download=True)
+data/
+*.csv
+*.gz
+
+# 학습된 모델 (실행 시 자동 저장)
+saved_model/
+*.pt
+*.pth
+*.h5
+*.ckpt
+
+# Jupyter
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+
+# 가상환경
+venv/
+env/
+.venv/
+ai-training-env/
+
+# 환경 변수 / 비밀키
+.env
+
+# OS / 에디터
+.DS_Store
+.vscode/
