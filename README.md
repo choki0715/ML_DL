@@ -87,7 +87,3 @@ bash setup.sh
 `setup.sh` 가 PyTorch·TensorFlow·scikit-learn·Gymnasium·HuggingFace 등 실습 환경 전체와 한글 폰트를 자동으로 설치합니다. (Ubuntu 22.04 / 24.04)
 
 설치 후 `jupyter lab` 실행 또는 VS Code에서 `.ipynb` 파일을 열면 됩니다.
-
-## 참고 자료
-
-- Style-based Generator (StyleGAN) 데모 영상: https://www.youtube.com/watch?v=kSLJriaOumA
