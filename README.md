@@ -78,48 +78,15 @@
 
 ## 설치 및 실행
 
-### 1. 저장소 클론
-
 ```bash
 git clone https://github.com/choki0715/ML_DL.git
 cd ML_DL
+bash setup.sh
 ```
 
-### 2-A. 전체 환경 자동 설치 (권장)
+`setup.sh` 가 PyTorch·TensorFlow·scikit-learn·Gymnasium·HuggingFace 등 실습 환경 전체와 한글 폰트를 자동으로 설치합니다. (Ubuntu 22.04 / 24.04)
 
-저장소에 포함된 [setup.sh](setup.sh) 가 PyTorch(CUDA)·TensorFlow·scikit-learn·Gymnasium·HuggingFace 등 실습에 필요한 전체 환경을 한 번에 구성합니다. (Ubuntu 22.04 / 24.04 기준, RTX 40 시리즈 최적화)
-
-```bash
-chmod +x setup.sh
-./setup.sh
-```
-
-설치되는 주요 구성: 딥러닝(PyTorch cu124, TensorFlow cu12) · 클래식 ML(scikit-learn, XGBoost, statsmodels) · CV(OpenCV, YOLO) · NLP/LLM(transformers, PEFT, sentence-transformers) · RAG(LangChain, FAISS) · 강화학습(Gymnasium) · 한글 폰트(나눔글꼴)
-
-### 2-B. 최소 설치 (노트북만 빠르게 실행)
-
-전체 환경이 필요 없다면 가상환경에 핵심 패키지만 설치해도 됩니다.
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-
-pip install numpy pandas matplotlib scikit-learn torch gymnasium jupyterlab
-sudo apt install -y fonts-nanum   # 한글 그래프 폰트
-```
-
-### 3. Jupyter 실행
-
-```bash
-jupyter lab        # 또는 VS Code에서 .ipynb 파일 열기
-```
-
-> **한글 폰트:** matplotlib 그래프에서 한글이 깨질 경우 `fonts-nanum` 설치 여부와, 노트북 상단 import 셀의 폰트 설정(`plt.rcParams['font.family'] = 'NanumGothic'`)을 확인하세요.
-
-### 환경 정보
-
-- Python 3.11 (가상환경 권장)
-- 주요 패키지: `numpy`, `pandas`, `matplotlib`, `scikit-learn`, `torch`, `gymnasium`
+설치 후 `jupyter lab` 실행 또는 VS Code에서 `.ipynb` 파일을 열면 됩니다.
 
 ## 참고 자료
 
