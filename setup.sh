@@ -1,16 +1,18 @@
 #!/bin/bash
 
 #===============================================================================
-# AI 교육 환경 설정 스크립트
-# Ubuntu 24.04 LTS 지원
+# ML_DL 실습 환경 설정 스크립트 (RTX 4060 / 8GB VRAM 타겟)
+# Ubuntu 22.04 / 24.04 LTS 지원
 #
 # 포함 내용:
-# 1. VSCode 설치
-# 2. Claude Code CLI 설치
-# 3. LLM Fine-tuning 환경 (HuggingFace + PEFT + PyTorch + CUDA)
-# 4. Streamlit 웹 서비스 환경
-# 5. RAG 환경 (LangChain + FAISS + OpenAI)
-# 6. 한국어 NLP (KoNLPy)
+# 1. VSCode + Claude Code CLI
+# 2. PyTorch (CUDA 12.4) + TensorFlow (CUDA 12)
+# 3. Classical ML (scikit-learn, XGBoost, statsmodels)
+# 4. CV (OpenCV, scikit-image, Ultralytics YOLO, TorchCAM, U-Net)
+# 5. NLP / LLM (HuggingFace transformers/PEFT/TRL/bitsandbytes,
+#    gensim, KoNLPy, sentence-transformers, GPTQ)
+# 6. RAG (LangChain + FAISS) / Streamlit
+# 7. RL (Gymnasium) / Audio (openai-whisper + ffmpeg)
 #
 # 변경 이력:
 # v2.0 - Ubuntu 24.04 호환, 안정 버전 고정, Python 기본값 복구
@@ -21,6 +23,13 @@
 #        .env API 키 자동 로드
 # v3.1 - 필요한 실습 파일만 다운로드, nltk 데이터 포함
 # v3.2 - rouge-score, bert-score, matplotlib, llama-cpp-python 추가
+# v4.0 - RTX 4060(Ada Lovelace, sm_89, 8GB VRAM) 환경 최적화
+#        ML_DL 로컬 저장소 노트북 전 범위 지원
+#        scikit-learn/xgboost/statsmodels, OpenCV(contrib), scikit-image,
+#        TensorFlow(cu12), ultralytics, torchcam, optimum/auto-gptq,
+#        openai-whisper(+ffmpeg), gymnasium[classic-control] 추가
+#        VRAM 8GB 가이드 환경변수(PYTORCH_CUDA_ALLOC_CONF) 추가
+#        프로젝트 셋업: 외부 다운로드 대신 로컬 ML_DL 폴더 사용
 #===============================================================================
 
 set -e
@@ -52,12 +61,13 @@ log_error() {
 print_banner() {
     echo ""
     echo "╔════════════════════════════════════════════════════════════════════╗"
-    echo "║           AI 교육 환경 설정 스크립트 (AIDENTIFY) v3.2            ║"
+    echo "║       ML_DL 실습 환경 설정 스크립트 (RTX 4060 타겟) v4.0          ║"
     echo "║                                                                    ║"
-    echo "║  • VSCode + Claude Code CLI                                        ║"
-    echo "║  • LLM Fine-tuning (HuggingFace + PEFT + LoRA)                    ║"
-    echo "║  • RAG (LangChain + FAISS + OpenAI)                                ║"
-    echo "║  • Streamlit + 한국어 NLP (KoNLPy)                                 ║"
+    echo "║  • PyTorch(cu124) + TensorFlow(cu12) + bitsandbytes(sm_89)         ║"
+    echo "║  • Classical ML (sklearn / XGBoost / statsmodels)                  ║"
+    echo "║  • CV (OpenCV / scikit-image / YOLO / TorchCAM)                    ║"
+    echo "║  • NLP/LLM (HF / PEFT / TRL / GPTQ / KoNLPy)                       ║"
+    echo "║  • RAG / Streamlit / Whisper / Gymnasium                           ║"
     echo "╚════════════════════════════════════════════════════════════════════╝"
     echo ""
 }
@@ -75,6 +85,32 @@ TRANSFORMERS_VERSION="4.46.0"
 TRL_VERSION="0.12.0"
 PEFT_VERSION="0.14.0"
 BITSANDBYTES_VERSION="0.45.0"
+
+# venv 위치 / 사용 Python (detect_python에서 채워짐)
+VENV_DIR="${VENV_DIR:-$HOME/ai-training-env}"
+PYTHON_BIN=""
+
+#-------------------------------------------------------------------------------
+# 사용 가능한 Python 인터프리터 탐지 (sudo 불필요)
+#  - 우선순위: python3.11 > 3.12 > 3.10 > 3 (단, 3.10 이상)
+#-------------------------------------------------------------------------------
+detect_python() {
+    for cand in python3.11 python3.12 python3.10 python3; do
+        if command -v "$cand" &> /dev/null; then
+            ver=$("$cand" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "")
+            major=${ver%.*}; minor=${ver#*.}
+            if [ "$major" = "3" ] && [ -n "$minor" ] && [ "$minor" -ge 10 ]; then
+                if "$cand" -c "import venv" &> /dev/null; then
+                    PYTHON_BIN="$cand"
+                    log_info "사용할 Python: $PYTHON_BIN ($ver)"
+                    return 0
+                fi
+            fi
+        fi
+    done
+    log_error "Python 3.10+ (with venv) 가 필요합니다. 'sudo apt install python3.11 python3.11-venv' 또는 --llm-only 모드를 사용하세요."
+    exit 1
+}
 
 #-------------------------------------------------------------------------------
 # 시스템 사전 요구사항 확인
@@ -109,8 +145,21 @@ check_requirements() {
     
     if command -v nvidia-smi &> /dev/null; then
         log_success "NVIDIA GPU 감지됨"
-        nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+        nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
         HAS_GPU=true
+
+        GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
+        GPU_VRAM_MIB=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits | head -1)
+        GPU_VRAM_GB=$((GPU_VRAM_MIB / 1024))
+
+        if echo "$GPU_NAME" | grep -qi "4060"; then
+            log_success "RTX 4060 (Ada Lovelace, sm_89) 감지 → 권장 환경과 일치합니다."
+        fi
+        if [ "$GPU_VRAM_GB" -le 9 ]; then
+            log_warning "VRAM ${GPU_VRAM_GB}GB 환경입니다. LLM은 4-bit(QLoRA) 또는 ≤3B 모델을 권장합니다."
+            log_warning "  - batch_size, gradient_accumulation_steps, max_seq_length를 보수적으로 설정하세요."
+            log_warning "  - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True 가 자동 설정됩니다."
+        fi
     else
         log_warning "NVIDIA GPU가 감지되지 않음. CPU 모드로 설치됩니다."
         HAS_GPU=false
@@ -125,10 +174,14 @@ update_system() {
     sudo apt-get update
     sudo apt-get upgrade -y
     sudo apt-get install -y \
-        curl wget git build-essential \
+        curl wget git build-essential cmake pkg-config \
         software-properties-common apt-transport-https \
         ca-certificates gnupg lsb-release unzip jq \
-        default-jdk
+        default-jdk \
+        ffmpeg libsndfile1 \
+        libgl1 libglib2.0-0 \
+        libopenblas-dev liblapack-dev gfortran \
+        swig
     log_success "시스템 업데이트 완료"
 }
 
@@ -248,17 +301,30 @@ install_cuda() {
 #-------------------------------------------------------------------------------
 setup_llm_environment() {
     log_info "LLM Fine-tuning 환경 설정 중..."
-    
-    VENV_DIR="$HOME/ai-training-env"
-    
-    if [ -d "$VENV_DIR" ]; then
-        log_warning "기존 가상환경을 발견했습니다. 백업 후 재생성합니다."
-        mv "$VENV_DIR" "${VENV_DIR}.backup.$(date +%Y%m%d%H%M%S)"
+
+    [ -z "$PYTHON_BIN" ] && detect_python
+
+    # GPU 플래그가 비어 있으면 nvidia-smi로 자동 판정 (--venv-only 단독 실행 대비)
+    if [ -z "${HAS_GPU:-}" ]; then
+        if command -v nvidia-smi &> /dev/null; then HAS_GPU=true; else HAS_GPU=false; fi
     fi
-    
-    python3.11 -m venv "$VENV_DIR"
+
+    if [ -d "$VENV_DIR" ]; then
+        if [ "${REUSE_VENV:-0}" = "1" ]; then
+            log_warning "기존 가상환경을 재사용합니다: $VENV_DIR"
+        else
+            log_warning "기존 가상환경을 발견했습니다. 백업 후 재생성합니다."
+            mv "$VENV_DIR" "${VENV_DIR}.backup.$(date +%Y%m%d%H%M%S)"
+        fi
+    fi
+
+    if [ ! -d "$VENV_DIR" ]; then
+        log_info "가상환경 생성: $VENV_DIR (with $PYTHON_BIN)"
+        "$PYTHON_BIN" -m venv "$VENV_DIR"
+    fi
+    # shellcheck disable=SC1091
     source "$VENV_DIR/bin/activate"
-    
+
     pip install --upgrade pip setuptools wheel
     
     # PyTorch
@@ -282,8 +348,38 @@ setup_llm_environment() {
         python -c "import torch; assert torch.cuda.is_available(), 'GPU not detected!'; print(f'GPU: {torch.cuda.get_device_name(0)}')"
     fi
     
-    # 핵심 ML 패키지
-    log_info "핵심 ML 패키지 설치 중..."
+    # 데이터/시각화 공통
+    # numpy<2 고정: TF 2.17 / pmdarima / 일부 강의용 노트북 호환
+    log_info "데이터 분석 / 시각화 패키지 설치 중..."
+    pip install \
+        "numpy<2" "pandas>=2.2" "scipy>=1.13" \
+        matplotlib seaborn plotly tqdm \
+        jinja2 openpyxl
+
+    # Classical ML / 시계열
+    log_info "Classical ML / 시계열 패키지 설치 중 (sklearn/XGBoost/statsmodels)..."
+    pip install \
+        "scikit-learn>=1.5" xgboost lightgbm \
+        statsmodels pmdarima
+
+    # 컴퓨터 비전 (OpenCV / scikit-image / YOLO / TorchCAM)
+    # opencv 4.11+ 는 numpy>=2 요구 → numpy<2 와 충돌. 4.10 으로 핀.
+    log_info "컴퓨터 비전 패키지 설치 중..."
+    pip install \
+        "opencv-contrib-python==4.10.0.84" \
+        "Pillow>=10" scikit-image imageio \
+        torchcam ultralytics segmentation-models-pytorch albumentations
+
+    # TensorFlow (CPU 휠 고정)
+    # 사유: TF 2.17 의 [and-cuda] 는 CUDA 12.3 + cuDNN 8.9 의 nvidia-* 휠을 설치해
+    #       PyTorch 2.6+cu124(CUDA 12.4 + cuDNN 9.1) 의 nvidia-* 를 덮어써 torch 가 깨짐.
+    #       cuDNN 메이저 버전이 달라 GPU 공유가 불가능하므로, 학습용 환경에서는
+    #       PyTorch 만 GPU 를 사용하고 TF 는 CPU 로 둔다 (TF 노트북 2개는 작은 규모).
+    log_info "TensorFlow (CPU 휠) 설치 중..."
+    pip install "tensorflow==2.17.0" "tensorflow-datasets>=4.9"
+
+    # HuggingFace 핵심 (RTX 4060 / sm_89: bitsandbytes>=0.45 필수)
+    log_info "HuggingFace / LLM 핵심 패키지 설치 중..."
     pip install \
         "transformers==${TRANSFORMERS_VERSION}" \
         "trl==${TRL_VERSION}" \
@@ -291,95 +387,122 @@ setup_llm_environment() {
         "bitsandbytes>=${BITSANDBYTES_VERSION}" \
         "datasets>=3.0.0" \
         "accelerate>=1.2.0" \
+        "evaluate" \
         "sentencepiece" \
         "protobuf" \
-        "safetensors"
-    
+        "safetensors" \
+        "einops" \
+        "tokenizers"
+
+    # 양자화 (GPTQ / AWQ)
+    log_info "양자화 패키지 설치 중 (optimum / auto-gptq)..."
+    pip install "optimum>=1.23" \
+        || log_warning "optimum 설치 실패"
+    pip install auto-gptq \
+        || log_warning "auto-gptq 빌드 실패 - GPTQ_example.ipynb 실행 시 'pip install auto-gptq' 재시도 필요"
+
     # NLP / 임베딩
-    log_info "NLP 패키지 설치 중..."
+    log_info "NLP / 임베딩 패키지 설치 중..."
     pip install \
-        gensim nltk konlpy sentence-transformers
+        gensim nltk konlpy sentence-transformers fasttext-wheel
 
     # nltk 데이터 다운로드
-    python -c "import nltk; nltk.download('punkt'); nltk.download('punkt_tab')"
-    
+    python -c "import nltk; [nltk.download(p, quiet=True) for p in ['punkt','punkt_tab','stopwords','averaged_perceptron_tagger','wordnet']]"
+
     # RAG
     log_info "RAG 패키지 설치 중..."
     pip install \
         langchain langchain-community langchain-openai \
         langchain-text-splitters faiss-cpu \
-        pypdf python-dotenv beautifulsoup4 requests
+        pypdf python-dotenv beautifulsoup4 requests \
+        chromadb tiktoken
 
-    # 평가 메트릭 / 시각화 / GGUF
-    log_info "평가 및 유틸리티 패키지 설치 중..."
-    pip install rouge-score bert-score matplotlib llama-cpp-python
-    
+    # 평가 메트릭 / GGUF / 오디오 / 강화학습
+    log_info "평가 / 오디오(Whisper) / 강화학습 패키지 설치 중..."
+    pip install rouge-score bert-score sacrebleu llama-cpp-python
+    pip install openai-whisper soundfile librosa
+    pip install "gymnasium[classic-control]" pygame
+
     # Jupyter
     log_info "Jupyter 환경 설치 중..."
     pip install jupyter jupyterlab ipywidgets ipykernel
     python -m ipykernel install --user --name=ai-training --display-name="ai-training-env"
-    
+
     # Streamlit
     log_info "Streamlit 설치 중..."
     pip install streamlit
     
     # 확인
     log_info "설치된 주요 패키지 버전:"
-    python -c "
+    python - <<'PYCHK'
+def show(name, attr='__version__'):
+    try:
+        m = __import__(name)
+        print(f'  {name:22s}: {getattr(m, attr, "?")}')
+    except Exception as e:
+        print(f'  {name:22s}: (미설치/오류 - {e.__class__.__name__})')
+
 import torch
-print(f'  PyTorch: {torch.__version__}')
-print(f'  CUDA: {torch.cuda.is_available()}')
+print(f'  PyTorch              : {torch.__version__}  (CUDA: {torch.cuda.is_available()})')
 if torch.cuda.is_available():
     for i in range(torch.cuda.device_count()):
-        print(f'  GPU {i}: {torch.cuda.get_device_name(i)}')
-import transformers; print(f'  Transformers: {transformers.__version__}')
-import trl; print(f'  TRL: {trl.__version__}')
-import peft; print(f'  PEFT: {peft.__version__}')
-import bitsandbytes; print(f'  BitsAndBytes: {bitsandbytes.__version__}')
-import gensim; print(f'  Gensim: {gensim.__version__}')
-import streamlit; print(f'  Streamlit: {streamlit.__version__}')
-import langchain; print(f'  LangChain: {langchain.__version__}')
-"
+        cap = torch.cuda.get_device_capability(i)
+        print(f'    GPU {i}: {torch.cuda.get_device_name(i)}  sm_{cap[0]}{cap[1]}')
+
+for pkg in ['transformers','trl','peft','bitsandbytes','accelerate','datasets',
+            'tensorflow','sklearn','xgboost','statsmodels',
+            'cv2','skimage','ultralytics','torchcam',
+            'gensim','nltk','konlpy','sentence_transformers',
+            'langchain','faiss','streamlit',
+            'gymnasium','whisper']:
+    show(pkg)
+PYCHK
     
     deactivate
     log_success "LLM Fine-tuning 환경 설정 완료"
 }
 
 #-------------------------------------------------------------------------------
-# 실습 파일 다운로드 (필요한 파일만)
+# 실습 프로젝트 설정 (로컬 ML_DL 저장소 사용)
 #-------------------------------------------------------------------------------
 setup_example_project() {
     log_info "예제 프로젝트 설정 중..."
-    
+
     PROJECT_DIR="$HOME/ai-training-projects"
-    LECTURE_DIR="$PROJECT_DIR/lecture"
-    mkdir -p "$LECTURE_DIR"
-    cd "$LECTURE_DIR"
-    
-    BASE_URL="https://raw.githubusercontent.com/choki0715/lecture/master"
-    FILES=(
-        "tokenization.ipynb"
-        "word2vec_embedding.ipynb"
-        "fasttext_embedding.ipynb"
-        "quant_simple.ipynb"
-        "quant_perform.ipynb"
-        "quantization_comparison.ipynb"
-        "lora_finetuning.ipynb"
-        "app.py"
-        "rag_app.py"
-        "train_data.csv"
-        "a_poor_dog.txt"
-        "claude_code_lab_guide.md"
-    )
-    
-    log_info "실습 파일 다운로드 중..."
-    for f in "${FILES[@]}"; do
-        wget -q "${BASE_URL}/${f}" -O "${f}" && log_info "  ✓ ${f}" || log_warning "  ✗ ${f} 다운로드 실패"
-    done
-    
-    # Claude Code 실습 폴더
+    mkdir -p "$PROJECT_DIR"
+
+    # 스크립트가 위치한 디렉터리(= ML_DL 저장소 루트로 가정)
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+    if [ -f "$SCRIPT_DIR/setup.sh" ] && ls "$SCRIPT_DIR"/*.ipynb >/dev/null 2>&1; then
+        log_info "로컬 ML_DL 저장소 감지: $SCRIPT_DIR"
+        ln -sfn "$SCRIPT_DIR" "$PROJECT_DIR/ML_DL"
+        log_success "심볼릭 링크 생성: $PROJECT_DIR/ML_DL → $SCRIPT_DIR"
+    else
+        log_warning "ML_DL 노트북을 찾지 못했습니다. git clone을 시도합니다."
+        if [ ! -d "$PROJECT_DIR/ML_DL" ]; then
+            git clone https://github.com/choki0715/ML_DL.git "$PROJECT_DIR/ML_DL" \
+                || log_warning "git clone 실패 - 수동으로 ML_DL 저장소를 배치하세요."
+        fi
+    fi
+
+    # 작업/캐시 디렉터리
     mkdir -p "$PROJECT_DIR/ai-assistant"
-    
+    mkdir -p "$PROJECT_DIR/data"
+    mkdir -p "$PROJECT_DIR/checkpoints"
+
+    # .env 템플릿 (없을 때만)
+    if [ ! -f "$PROJECT_DIR/.env" ]; then
+        cat > "$PROJECT_DIR/.env" <<'ENVEOF'
+# API 키는 사용 시점에만 입력하세요. 커밋 금지.
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+HF_TOKEN=
+ENVEOF
+        chmod 600 "$PROJECT_DIR/.env"
+        log_info ".env 템플릿 생성: $PROJECT_DIR/.env"
+    fi
+
     log_success "예제 프로젝트 설정 완료: $PROJECT_DIR"
 }
 
@@ -396,35 +519,29 @@ setup_environment_variables() {
     
     cat >> ~/.bashrc << 'EOF'
 
-# ====== AI Training Environment v3.2 ======
+# ====== AI Training Environment v4.0 (RTX 4060) ======
 export AI_TRAINING_HOME="$HOME/ai-training-projects"
 export AI_VENV="$HOME/ai-training-env"
 
 # 멀티 GPU 충돌 방지 (기본 GPU 0번만 사용)
 export CUDA_VISIBLE_DEVICES=0
 
-# .env에서 API 키 자동 로드
+# RTX 4060 / 8GB VRAM 친화 설정
+# - PyTorch 단편화 완화 (긴 컨텍스트 / 동적 shape 워크로드)
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+# - TensorFlow가 VRAM을 한꺼번에 잡지 않도록
+export TF_FORCE_GPU_ALLOW_GROWTH=true
+# - TF 로그 노이즈 감소
+export TF_CPP_MIN_LOG_LEVEL=2
+# - tokenizers fork 경고 억제
+export TOKENIZERS_PARALLELISM=false
+
+# .env에서 API 키 자동 로드 (값에 공백/특수문자 있어도 안전하게)
 if [ -f "$HOME/ai-training-projects/.env" ]; then
-    export $(grep -v '^#' "$HOME/ai-training-projects/.env" | xargs)
+    set -a
+    . "$HOME/ai-training-projects/.env"
+    set +a
 fi
-
-# 가상환경 활성화 함수
-activate_ai() {
-    source "$AI_VENV/bin/activate"
-    echo "AI Training 가상환경이 활성화되었습니다."
-}
-
-# Jupyter Lab 시작 함수
-start_jupyter() {
-    source "$AI_VENV/bin/activate"
-    jupyter lab --ip=0.0.0.0 --port=8888 --no-browser
-}
-
-# Streamlit 앱 시작 함수
-start_streamlit() {
-    source "$AI_VENV/bin/activate"
-    streamlit run "$1" --server.port=8501 --server.address=0.0.0.0
-}
 
 # HuggingFace 캐시
 export HF_HOME="$HOME/.cache/huggingface"
@@ -433,10 +550,7 @@ export TRANSFORMERS_CACHE="$HOME/.cache/huggingface/transformers"
 # wandb 비활성화
 export WANDB_DISABLED=true
 
-# Alias
-alias ai='activate_ai'
-alias jlab='start_jupyter'
-alias sl='start_streamlit'
+# 가상환경 활성화: source ~/ai-training-env/bin/activate
 EOF
 
     log_success "환경 변수 설정 완료"
@@ -452,31 +566,41 @@ print_completion_info() {
     echo "╚════════════════════════════════════════════════════════════════════╝"
     echo ""
     echo "📁 설치된 위치:"
-    echo "   • 가상환경: $HOME/ai-training-env"
-    echo "   • 프로젝트: $HOME/ai-training-projects"
-    echo "   • 실습 노트북: $HOME/ai-training-projects/lecture"
+    echo "   • 가상환경 : $HOME/ai-training-env"
+    echo "   • 프로젝트 : $HOME/ai-training-projects"
+    echo "   • ML_DL    : $HOME/ai-training-projects/ML_DL  (로컬 저장소 심볼릭 링크)"
     echo ""
     echo "🚀 빠른 시작:"
     echo "   1. source ~/.bashrc"
-    echo "   2. ai              (가상환경 활성화)"
-    echo "   3. jlab            (Jupyter Lab)"
-    echo "   4. sl <app.py>     (Streamlit)"
-    echo "   5. claude          (Claude Code)"
+    echo "   2. source ~/ai-training-env/bin/activate     (가상환경 활성화)"
+    echo "   3. jupyter lab --ip=0.0.0.0 --no-browser     (Jupyter Lab)"
+    echo "   4. streamlit run app.py                      (Streamlit)"
+    echo "   5. claude                                    (Claude Code)"
     echo ""
-    echo "📓 실습 노트북:"
-    echo "   • tokenization.ipynb        - 토큰화"
-    echo "   • word2vec_embedding.ipynb   - Word2Vec"
-    echo "   • fasttext_embedding.ipynb   - FastText (nltk vs KoNLPy)"
-    echo "   • quant_simple.ipynb         - 양자화 크기 비교"
-    echo "   • quant_perform.ipynb        - 양자화 품질 비교"
-    echo "   • quantization_comparison.ipynb - BnB vs GGUF"
-    echo "   • lora_finetuning.ipynb      - LoRA Fine-tuning"
-    echo "   • rag_app.py                 - RAG (PDF + OpenAI)"
-    echo "   • claude_code_lab_guide.md   - Claude Code 실습 가이드"
+    echo "   해제: deactivate"
+    echo ""
+    echo "🎮 RTX 4060 / 8GB VRAM 운영 팁:"
+    echo "   • LLM 학습: 4-bit(QLoRA) + per_device_batch=1, grad_accum 사용"
+    echo "   • 추론   : torch_dtype=torch.float16 또는 bfloat16, 모델 ≤ 7B(4-bit) 권장"
+    echo "   • TF/PT 동시 사용 금지(같은 GPU에서 OOM 위험) — 노트북 커널 분리"
+    echo "   • PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True 자동 적용됨"
+    echo ""
+    echo "📓 노트북 카테고리 (전부 ML_DL 폴더):"
+    echo "   • Classical ML : IRIS_KNN, Decision_Tree, SVM*, XGBoost_Example,"
+    echo "                    dimensionality_reduction, SVD, Unsupervised*"
+    echo "   • 시계열       : AR_ARMA_ARIMA, time_series_decompose, multivariate_time_series"
+    echo "   • DL 기초      : MLP/CNN_MNIST_PyTorch, fashion_minist_*"
+    echo "   • 생성모델     : Convolutional_GAN/VAE_Fashion_MNIST, TF_GAN_Celeb"
+    echo "   • CV           : cv2_image, HOG, opencv_*, TorchCAM_Quickstart, yolo_basics, Unet"
+    echo "   • NLP/LLM      : tokenization, word2vec_embedding, fasttext_embedding,"
+    echo "                    seq2seq_example, GPTQ_example, lora_finetuning"
+    echo "   • RL / Audio   : RL_Gym_*, openai_whisper"
+    echo "   • Web          : app.py (Streamlit)"
     echo ""
     echo "📋 API 키 설정: ~/ai-training-projects/.env"
     echo "   OPENAI_API_KEY=sk-..."
     echo "   ANTHROPIC_API_KEY=sk-ant-..."
+    echo "   HF_TOKEN=hf_..."
     echo ""
 }
 
@@ -502,15 +626,39 @@ case "${1:-}" in
     --vscode-only)   update_system; install_vscode ;;
     --claude-only)   install_nodejs; install_claude_code ;;
     --llm-only)      check_requirements; install_python; install_cuda; setup_llm_environment ;;
+    --venv-only)
+        # sudo 없이 가상환경 + 모든 라이브러리만 설치
+        # 전제: Python 3.10+ 와 NVIDIA 드라이버가 이미 설치되어 있음
+        print_banner
+        check_requirements
+        detect_python
+        setup_llm_environment
+        setup_environment_variables
+        echo ""
+        log_success "가상환경 준비 완료: $VENV_DIR"
+        log_info "활성화: source $VENV_DIR/bin/activate"
+        ;;
+    --venv-reuse)
+        # 기존 venv를 지우지 않고 누락 패키지만 추가 설치
+        REUSE_VENV=1
+        check_requirements
+        detect_python
+        setup_llm_environment
+        ;;
     --project-only)  setup_example_project ;;
     --help)
         echo "사용법: $0 [옵션]"
-        echo "  (없음)            전체 설치"
-        echo "  --vscode-only     VSCode만 설치"
-        echo "  --claude-only     Claude Code만 설치"
-        echo "  --llm-only        LLM 환경만 설치"
-        echo "  --project-only    프로젝트만 설정"
+        echo "  (없음)            전체 설치 (sudo 필요)"
+        echo "  --vscode-only     VSCode만 설치 (sudo 필요)"
+        echo "  --claude-only     Claude Code만 설치 (sudo 필요)"
+        echo "  --llm-only        Python/CUDA 설치 + 가상환경 + 라이브러리 (sudo 필요)"
+        echo "  --venv-only       가상환경 + 라이브러리만 설치 (sudo 불필요)"
+        echo "  --venv-reuse      기존 가상환경 유지하고 라이브러리만 재설치"
+        echo "  --project-only    프로젝트 폴더/.env만 설정"
         echo "  --help            도움말 표시"
+        echo ""
+        echo "환경변수:"
+        echo "  VENV_DIR=...      가상환경 경로 변경 (기본: \$HOME/ai-training-env)"
         ;;
     *) main ;;
 esac
