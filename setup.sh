@@ -425,7 +425,9 @@ setup_llm_environment() {
 
     # Jupyter
     log_info "Jupyter 환경 설치 중..."
-    pip install jupyter jupyterlab ipywidgets ipykernel
+    # ipykernel은 VS Code Jupyter 확장 호환성이 검증된 6.29.x로 고정
+    # (7.x는 "notebook controller is DISPOSED" 오류를 유발하는 경우가 있음)
+    pip install jupyter jupyterlab ipywidgets "ipykernel==6.29.5"
     python -m ipykernel install --user --name=ai-training --display-name="ai-training-env"
 
     # Streamlit
@@ -504,6 +506,36 @@ ENVEOF
     fi
 
     log_success "예제 프로젝트 설정 완료: $PROJECT_DIR"
+}
+
+#-------------------------------------------------------------------------------
+# VS Code 인터프리터 자동 지정
+#   클론한 ML_DL 폴더에 .vscode/settings.json 을 생성해 가상환경 파이썬을
+#   기본 인터프리터로 지정한다. 이러면 수강생이 폴더를 열자마자 torch 등
+#   import 가 정상 인식되어 빨간 표시/커널 수동선택이 필요 없다.
+#-------------------------------------------------------------------------------
+setup_vscode_settings() {
+    log_info "VS Code 인터프리터 설정 중..."
+
+    local SCRIPT_DIR
+    SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+    local VENV_PY="$VENV_DIR/bin/python"
+
+    if [ ! -x "$VENV_PY" ]; then
+        log_warning "가상환경 파이썬을 찾지 못해 VS Code 설정을 건너뜁니다: $VENV_PY"
+        return 0
+    fi
+
+    mkdir -p "$SCRIPT_DIR/.vscode"
+    cat > "$SCRIPT_DIR/.vscode/settings.json" <<EOF
+{
+    "python.defaultInterpreterPath": "$VENV_PY",
+    "python.terminal.activateEnvironment": true,
+    "jupyter.notebookFileRoot": "\${workspaceFolder}"
+}
+EOF
+    log_success "VS Code 설정 생성: $SCRIPT_DIR/.vscode/settings.json (인터프리터: $VENV_PY)"
+    log_info "VS Code에서 이 폴더를 열면 자동으로 ai-training-env 가 선택됩니다."
 }
 
 #-------------------------------------------------------------------------------
@@ -618,6 +650,7 @@ main() {
     install_cuda
     setup_llm_environment
     setup_example_project
+    setup_vscode_settings
     setup_environment_variables
     print_completion_info
 }
@@ -625,7 +658,7 @@ main() {
 case "${1:-}" in
     --vscode-only)   update_system; install_vscode ;;
     --claude-only)   install_nodejs; install_claude_code ;;
-    --llm-only)      check_requirements; install_python; install_cuda; setup_llm_environment ;;
+    --llm-only)      check_requirements; install_python; install_cuda; setup_llm_environment; setup_vscode_settings ;;
     --venv-only)
         # sudo 없이 가상환경 + 모든 라이브러리만 설치
         # 전제: Python 3.10+ 와 NVIDIA 드라이버가 이미 설치되어 있음
@@ -633,6 +666,7 @@ case "${1:-}" in
         check_requirements
         detect_python
         setup_llm_environment
+        setup_vscode_settings
         setup_environment_variables
         echo ""
         log_success "가상환경 준비 완료: $VENV_DIR"
@@ -644,6 +678,7 @@ case "${1:-}" in
         check_requirements
         detect_python
         setup_llm_environment
+        setup_vscode_settings
         ;;
     --project-only)  setup_example_project ;;
     --help)
